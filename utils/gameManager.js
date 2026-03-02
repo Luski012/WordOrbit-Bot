@@ -189,75 +189,96 @@ class GameManager {
   /* ---------------- GUESS HANDLING ---------------- */
 
   async handleGuess(message) {
-    if (!this.games.has(message.channel.id)) return;
-    if (message.author.bot) return;
+  if (!this.games.has(message.channel.id)) return;
+  if (message.author.bot) return;
 
-    const guess = message.content.toLowerCase().trim();
-    if (!/^[a-zA-Z]+$/.test(guess)) return;
+  const guess = message.content.toLowerCase().trim();
+  if (!/^[a-zA-Z]+$/.test(guess)) return;
 
-    const game = this.games.get(message.channel.id);
+  const game = this.games.get(message.channel.id);
 
-    const now = Date.now();
-    const last = game.lastGuess.get(message.author.id) || 0;
-    if (now - last < 2000) return;
+  const now = Date.now();
+  const last = game.lastGuess.get(message.author.id) || 0;
+  if (now - last < 2000) return;
 
-    game.lastGuess.set(message.author.id, now);
+  game.lastGuess.set(message.author.id, now);
 
-    if (game.guesses.find(g => g.word === guess)) return;
+  if (game.guesses.find(g => g.word === guess)) return;
 
-    if (guess === game.secret) {
-      this.games.delete(message.channel.id);
+  if (guess === game.secret) {
+    this.games.delete(message.channel.id);
 
-      leaderboard[message.author.id] = (leaderboard[message.author.id] || 0) + 1;
+    leaderboard[message.author.id] = (leaderboard[message.author.id] || 0) + 1;
 
-      stats[message.author.id] = stats[message.author.id] || {
-        wins: 0,
-        streak: 0
-      };
+    stats[message.author.id] = stats[message.author.id] || {
+      wins: 0,
+      streak: 0
+    };
 
-      stats[message.author.id].wins++;
-      stats[message.author.id].streak++;
+    stats[message.author.id].wins++;
+    stats[message.author.id].streak++;
 
-      save(leaderboardFile, leaderboard);
-      save(statsFile, stats);
+    save(leaderboardFile, leaderboard);
+    save(statsFile, stats);
 
-      return message.reply(`🏆 Correct! The word was **${game.secret}**`);
-    }
-
-    const guessEmbedding = await getEmbedding(guess);
-    const similarity = cosineSimilarity(game.embedding, guessEmbedding);
-
-    game.guesses.push({ word: guess, similarity });
-
-    game.guesses.sort((a, b) => b.similarity - a.similarity);
-
-    const rank = game.guesses.findIndex(g => g.word === guess) + 1;
-
-    const bestBefore = game.userBest.get(message.author.id) || 0;
-    const arrow =
-      similarity > bestBefore ? "⬆️" :
-      similarity < bestBefore ? "⬇️" :
-      "➡️";
-
-    if (similarity > bestBefore)
-      game.userBest.set(message.author.id, similarity);
-
-    const top5 = game.guesses.slice(0, 5)
-      .map((g, i) => `${i + 1}. ${g.word}`)
-      .join("\n");
-
-    return message.reply({
-      embeds: [
-        new EmbedBuilder()
-          .setTitle(`🔎 ${guess}`)
-          .setDescription(
-            `Rank: **#${rank}** ${arrow}\n\n` +
-            `**Top Guesses:**\n${top5}`
-          )
-          .setColor(0x00AEFF)
-      ]
-    });
+    return message.reply(`🏆 **Correct!** The word was **${game.secret}**`);
   }
+
+  const guessEmbedding = await getEmbedding(guess);
+  const similarity = cosineSimilarity(game.embedding, guessEmbedding);
+
+  game.guesses.push({ word: guess, similarity });
+
+  // Sort best first
+  game.guesses.sort((a, b) => b.similarity - a.similarity);
+
+  const rank = game.guesses.findIndex(g => g.word === guess) + 1;
+  const totalGuesses = game.guesses.length;
+
+  // Heat tiers
+  let heat;
+  if (similarity > 0.85) heat = "🔥 VERY CLOSE";
+  else if (similarity > 0.70) heat = "🌡️ Warm";
+  else if (similarity > 0.55) heat = "🧊 Cold";
+  else heat = "❄️ Very Cold";
+
+  // Personal movement arrow
+  const bestBefore = game.userBest.get(message.author.id) || 0;
+  const arrow =
+    similarity > bestBefore ? "⬆️" :
+    similarity < bestBefore ? "⬇️" :
+    "➡️";
+
+  if (similarity > bestBefore)
+    game.userBest.set(message.author.id, similarity);
+
+  // Top 5 formatted nicely
+  const top5 = game.guesses.slice(0, 5)
+    .map((g, i) => {
+      const medal =
+        i === 0 ? "🥇" :
+        i === 1 ? "🥈" :
+        i === 2 ? "🥉" : "•";
+      return `${medal} ${g.word}`;
+    })
+    .join("\n");
+
+  return message.reply({
+    embeds: [
+      new EmbedBuilder()
+        .setTitle(`🔎 ${guess}`)
+        .setDescription(
+          `**Rank:** #${rank} of ${totalGuesses} ${arrow}\n` +
+          `**Heat:** ${heat}\n\n` +
+          `__Top Guesses__\n${top5}`
+        )
+        .setColor(
+          similarity > 0.75 ? 0xff4d4d :
+          similarity > 0.60 ? 0xffa500 :
+          0x3498db
+        )
+    ]
+  });
 }
 
 const manager = new GameManager();
