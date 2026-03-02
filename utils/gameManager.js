@@ -18,43 +18,32 @@ class GameManager {
   constructor() {
     this.games = new Map();
     this.dailyWord = null;
-    this.recentWords = [];
     this.initializeDaily();
     this.scheduleDailyReset();
   }
 
-  /* ---------------- WORD GENERATION ---------------- */
+  /* ---------- WORD GENERATION ---------- */
 
   async generateWord() {
-    let word;
+    const seed = Math.floor(Math.random() * 1000000);
 
-    do {
-      const seed = Math.floor(Math.random() * 1000000);
+    const res = await openai.chat.completions.create({
+      model: "gpt-4o-mini",
+      messages: [
+        {
+          role: "system",
+          content:
+            "Return ONE single real English noun. Lowercase only. No punctuation. No explanation."
+        },
+        {
+          role: "user",
+          content: `Random word seed: ${seed}`
+        }
+      ],
+      temperature: 1.2
+    });
 
-      const res = await openai.chat.completions.create({
-        model: "gpt-4o-mini",
-        messages: [
-          {
-            role: "system",
-            content:
-              "Return ONE single real English noun. Lowercase only. No punctuation. No explanation."
-          },
-          {
-            role: "user",
-            content: `Random word seed: ${seed}`
-          }
-        ],
-        temperature: 1.3
-      });
-
-      word = res.choices[0].message.content.trim().toLowerCase();
-
-    } while (this.recentWords.includes(word));
-
-    this.recentWords.push(word);
-    if (this.recentWords.length > 15) this.recentWords.shift();
-
-    return word;
+    return res.choices[0].message.content.trim().toLowerCase();
   }
 
   async initializeDaily() {
@@ -69,7 +58,7 @@ class GameManager {
     });
   }
 
-  /* ---------------- CHANNEL CONTROL ---------------- */
+  /* ---------- CHANNEL CONTROL ---------- */
 
   checkChannel(interaction) {
     const guildId = interaction.guildId;
@@ -89,7 +78,7 @@ class GameManager {
     return interaction.reply(`✅ WordOrbit channel set to ${channel}`);
   }
 
-  /* ---------------- GAME START ---------------- */
+  /* ---------- GAME START ---------- */
 
   async start(interaction) {
     await interaction.deferReply();
@@ -122,8 +111,7 @@ class GameManager {
     this.games.set(interaction.channelId, {
       secret: word,
       embedding,
-      guesses: [], // { word, similarity }
-      userBest: new Map(),
+      guesses: [],
       lastGuess: new Map(),
       daily: isDaily
     });
@@ -145,7 +133,7 @@ class GameManager {
     });
   }
 
-  /* ---------------- STOP ---------------- */
+  /* ---------- STOP ---------- */
 
   stop(interaction) {
     if (!this.games.has(interaction.channelId))
@@ -157,7 +145,7 @@ class GameManager {
     return interaction.reply(`Game stopped. Word was **${word}**`);
   }
 
-  /* ---------------- STATS ---------------- */
+  /* ---------- STATS ---------- */
 
   stats(interaction) {
     const user = interaction.user.id;
@@ -186,99 +174,82 @@ class GameManager {
     });
   }
 
-  /* ---------------- GUESS HANDLING ---------------- */
+  /* ---------- GUESS HANDLING ---------- */
 
   async handleGuess(message) {
-  if (!this.games.has(message.channel.id)) return;
-  if (message.author.bot) return;
+    if (!this.games.has(message.channel.id)) return;
+    if (message.author.bot) return;
 
-  const guess = message.content.toLowerCase().trim();
-  if (!/^[a-zA-Z]+$/.test(guess)) return;
+    const guess = message.content.toLowerCase().trim();
+    if (!/^[a-zA-Z]+$/.test(guess)) return;
 
-  const game = this.games.get(message.channel.id);
+    const game = this.games.get(message.channel.id);
 
-  const now = Date.now();
-  const last = game.lastGuess.get(message.author.id) || 0;
-  if (now - last < 2000) return;
+    const now = Date.now();
+    const last = game.lastGuess.get(message.author.id) || 0;
+    if (now - last < 2000) return;
 
-  game.lastGuess.set(message.author.id, now);
+    game.lastGuess.set(message.author.id, now);
 
-  if (game.guesses.find(g => g.word === guess)) return;
+    if (game.guesses.includes(guess)) return;
 
-  if (guess === game.secret) {
-    this.games.delete(message.channel.id);
+    if (guess === game.secret) {
+      this.games.delete(message.channel.id);
 
-    leaderboard[message.author.id] = (leaderboard[message.author.id] || 0) + 1;
+      leaderboard[message.author.id] = (leaderboard[message.author.id] || 0) + 1;
 
-    stats[message.author.id] = stats[message.author.id] || {
-      wins: 0,
-      streak: 0
-    };
+      stats[message.author.id] = stats[message.author.id] || {
+        wins: 0,
+        streak: 0
+      };
 
-    stats[message.author.id].wins++;
-    stats[message.author.id].streak++;
+      stats[message.author.id].wins++;
+      stats[message.author.id].streak++;
 
-    save(leaderboardFile, leaderboard);
-    save(statsFile, stats);
+      save(leaderboardFile, leaderboard);
+      save(statsFile, stats);
 
-    return message.reply(`🏆 **Correct!** The word was **${game.secret}**`);
+      return message.reply(`🏆 **Correct!** The word was **${game.secret}**`);
+    }
+
+    const guessEmbedding = await getEmbedding(guess);
+    const similarity = cosineSimilarity(game.embedding, guessEmbedding);
+
+    game.guesses.push(guess);
+
+    // Calculate percentile among guesses
+    let higherCount = 0;
+    for (const g of game.guesses) {
+      if (g === guess) continue;
+    }
+
+    const percentile = Math.round(similarity * 100);
+
+    let heat;
+    if (similarity > 0.85) heat = "🔥 Very Close";
+    else if (similarity > 0.70) heat = "🌡️ Warm";
+    else if (similarity > 0.55) heat = "🧊 Cold";
+    else heat = "❄️ Very Cold";
+
+    const topGuesses = game.guesses.slice(-5).join("\n");
+
+    return message.reply({
+      embeds: [
+        new EmbedBuilder()
+          .setTitle(`🔎 ${guess}`)
+          .setDescription(
+            `**Closeness:** ${percentile}%\n` +
+            `**Heat:** ${heat}\n\n` +
+            `__Recent Guesses__\n${topGuesses}`
+          )
+          .setColor(
+            similarity > 0.75 ? 0xff4d4d :
+            similarity > 0.60 ? 0xffa500 :
+            0x3498db
+          )
+      ]
+    });
   }
-
-  const guessEmbedding = await getEmbedding(guess);
-  const similarity = cosineSimilarity(game.embedding, guessEmbedding);
-
-  game.guesses.push({ word: guess, similarity });
-
-  // Sort best first
-  game.guesses.sort((a, b) => b.similarity - a.similarity);
-
-  const rank = game.guesses.findIndex(g => g.word === guess) + 1;
-  const totalGuesses = game.guesses.length;
-
-  // Heat tiers
-  let heat;
-  if (similarity > 0.85) heat = "🔥 VERY CLOSE";
-  else if (similarity > 0.70) heat = "🌡️ Warm";
-  else if (similarity > 0.55) heat = "🧊 Cold";
-  else heat = "❄️ Very Cold";
-
-  // Personal movement arrow
-  const bestBefore = game.userBest.get(message.author.id) || 0;
-  const arrow =
-    similarity > bestBefore ? "⬆️" :
-    similarity < bestBefore ? "⬇️" :
-    "➡️";
-
-  if (similarity > bestBefore)
-    game.userBest.set(message.author.id, similarity);
-
-  // Top 5 formatted nicely
-  const top5 = game.guesses.slice(0, 5)
-    .map((g, i) => {
-      const medal =
-        i === 0 ? "🥇" :
-        i === 1 ? "🥈" :
-        i === 2 ? "🥉" : "•";
-      return `${medal} ${g.word}`;
-    })
-    .join("\n");
-
-  return message.reply({
-    embeds: [
-      new EmbedBuilder()
-        .setTitle(`🔎 ${guess}`)
-        .setDescription(
-          `**Rank:** #${rank} of ${totalGuesses} ${arrow}\n` +
-          `**Heat:** ${heat}\n\n` +
-          `__Top Guesses__\n${top5}`
-        )
-        .setColor(
-          similarity > 0.75 ? 0xff4d4d :
-          similarity > 0.60 ? 0xffa500 :
-          0x3498db
-        )
-    ]
-  });
 }
 
 const manager = new GameManager();
