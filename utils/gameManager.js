@@ -18,34 +18,58 @@ class GameManager {
   constructor() {
     this.games = new Map();
     this.dailyWord = null;
-    this.initDaily();
-    this.startDailyReset();
+    this.recentWords = [];
+    this.initializeDaily();
+    this.scheduleDailyReset();
   }
+
+  /* ---------------- WORD GENERATION ---------------- */
 
   async generateWord() {
-    const res = await openai.chat.completions.create({
-      model: "gpt-4o-mini",
-      messages: [
-        { role: "system", content: "Return ONE single common English noun only. Lowercase. No punctuation." },
-        { role: "user", content: "Give me a random word." }
-      ],
-      temperature: 1
-    });
+    let word;
 
-    return res.choices[0].message.content.trim().toLowerCase();
+    do {
+      const seed = Math.floor(Math.random() * 1000000);
+
+      const res = await openai.chat.completions.create({
+        model: "gpt-4o-mini",
+        messages: [
+          {
+            role: "system",
+            content:
+              "Return ONE single real English noun. Lowercase only. No punctuation. No explanation."
+          },
+          {
+            role: "user",
+            content: `Random word seed: ${seed}`
+          }
+        ],
+        temperature: 1.3
+      });
+
+      word = res.choices[0].message.content.trim().toLowerCase();
+
+    } while (this.recentWords.includes(word));
+
+    this.recentWords.push(word);
+    if (this.recentWords.length > 15) this.recentWords.shift();
+
+    return word;
   }
 
-  async initDaily() {
+  async initializeDaily() {
     this.dailyWord = await this.generateWord();
     console.log("🌍 Daily WordOrbit word:", this.dailyWord);
   }
 
-  startDailyReset() {
+  scheduleDailyReset() {
     cron.schedule("0 0 * * *", async () => {
       this.dailyWord = await this.generateWord();
       console.log("🌍 Daily WordOrbit reset:", this.dailyWord);
     });
   }
+
+  /* ---------------- CHANNEL CONTROL ---------------- */
 
   checkChannel(interaction) {
     const guildId = interaction.guildId;
@@ -65,6 +89,8 @@ class GameManager {
     interaction.reply(`✅ WordOrbit channel set to ${channel}`);
   }
 
+  /* ---------------- GAME START ---------------- */
+
   async start(interaction) {
     await interaction.deferReply();
 
@@ -74,8 +100,8 @@ class GameManager {
     if (this.games.has(interaction.channelId))
       return interaction.editReply("⚠️ Game already running here.");
 
-    const secret = await this.generateWord();
-    return this.createGame(interaction, secret, false);
+    const word = await this.generateWord();
+    return this.createGame(interaction, word, false);
   }
 
   async daily(interaction) {
@@ -118,6 +144,8 @@ class GameManager {
     });
   }
 
+  /* ---------------- STOP ---------------- */
+
   stop(interaction) {
     if (!this.games.has(interaction.channelId))
       return interaction.reply("No game running.");
@@ -127,6 +155,8 @@ class GameManager {
 
     interaction.reply(`Game stopped. Word was **${word}**`);
   }
+
+  /* ---------------- STATS ---------------- */
 
   stats(interaction) {
     const user = interaction.user.id;
@@ -155,6 +185,8 @@ class GameManager {
     });
   }
 
+  /* ---------------- GUESS HANDLING ---------------- */
+
   async handleGuess(message) {
     if (!this.games.has(message.channel.id)) return;
     if (message.author.bot) return;
@@ -170,13 +202,18 @@ class GameManager {
 
     game.lastGuess.set(message.author.id, now);
     if (game.guesses.includes(guess)) return;
+
     game.guesses.push(guess);
 
     if (guess === game.secret) {
       this.games.delete(message.channel.id);
 
       leaderboard[message.author.id] = (leaderboard[message.author.id] || 0) + 1;
-      stats[message.author.id] = stats[message.author.id] || { wins: 0, streak: 0 };
+
+      stats[message.author.id] = stats[message.author.id] || {
+        wins: 0,
+        streak: 0
+      };
 
       stats[message.author.id].wins++;
       stats[message.author.id].streak++;
