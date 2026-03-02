@@ -86,7 +86,7 @@ class GameManager {
     servers[interaction.guildId] = { channel: channel.id };
     save(serversFile, servers);
 
-    interaction.reply(`✅ WordOrbit channel set to ${channel}`);
+    return interaction.reply(`✅ WordOrbit channel set to ${channel}`);
   }
 
   /* ---------------- GAME START ---------------- */
@@ -120,13 +120,13 @@ class GameManager {
     const embedding = await getEmbedding(word);
 
     this.games.set(interaction.channelId, {
-  secret: word,
-  embedding,
-  guesses: [], // array of { word, similarity }
-  userBest: new Map(),
-  lastGuess: new Map(),
-  daily: isDaily
-});
+      secret: word,
+      embedding,
+      guesses: [], // { word, similarity }
+      userBest: new Map(),
+      lastGuess: new Map(),
+      daily: isDaily
+    });
 
     setTimeout(() => {
       if (this.games.has(interaction.channelId)) {
@@ -135,7 +135,7 @@ class GameManager {
       }
     }, 30 * 60 * 1000);
 
-    interaction.editReply({
+    return interaction.editReply({
       embeds: [
         new EmbedBuilder()
           .setTitle(isDaily ? "🌍 WordOrbit Daily" : "🚀 WordOrbit")
@@ -154,7 +154,7 @@ class GameManager {
     const word = this.games.get(interaction.channelId).secret;
     this.games.delete(interaction.channelId);
 
-    interaction.reply(`Game stopped. Word was **${word}**`);
+    return interaction.reply(`Game stopped. Word was **${word}**`);
   }
 
   /* ---------------- STATS ---------------- */
@@ -163,7 +163,7 @@ class GameManager {
     const user = interaction.user.id;
     const s = stats[user] || { wins: 0, streak: 0 };
 
-    interaction.reply(`🏆 Wins: ${s.wins}\n🔥 Streak: ${s.streak}`);
+    return interaction.reply(`🏆 Wins: ${s.wins}\n🔥 Streak: ${s.streak}`);
   }
 
   leaderboard(interaction) {
@@ -174,9 +174,9 @@ class GameManager {
     if (!sorted.length)
       return interaction.reply("No wins yet.");
 
-    const text = sorted.map(([id, w], i) => `${i+1}. <@${id}> - ${w}`).join("\n");
+    const text = sorted.map(([id, w], i) => `${i + 1}. <@${id}> - ${w}`).join("\n");
 
-    interaction.reply({
+    return interaction.reply({
       embeds: [
         new EmbedBuilder()
           .setTitle("🏆 WordOrbit Leaderboard")
@@ -189,75 +189,75 @@ class GameManager {
   /* ---------------- GUESS HANDLING ---------------- */
 
   async handleGuess(message) {
-  if (!this.games.has(message.channel.id)) return;
-  if (message.author.bot) return;
+    if (!this.games.has(message.channel.id)) return;
+    if (message.author.bot) return;
 
-  const guess = message.content.toLowerCase().trim();
-  if (!/^[a-zA-Z]+$/.test(guess)) return;
+    const guess = message.content.toLowerCase().trim();
+    if (!/^[a-zA-Z]+$/.test(guess)) return;
 
-  const game = this.games.get(message.channel.id);
+    const game = this.games.get(message.channel.id);
 
-  const now = Date.now();
-  const last = game.lastGuess.get(message.author.id) || 0;
-  if (now - last < 2000) return;
+    const now = Date.now();
+    const last = game.lastGuess.get(message.author.id) || 0;
+    if (now - last < 2000) return;
 
-  game.lastGuess.set(message.author.id, now);
+    game.lastGuess.set(message.author.id, now);
 
-  if (game.guesses.find(g => g.word === guess)) return;
+    if (game.guesses.find(g => g.word === guess)) return;
 
-  if (guess === game.secret) {
-    this.games.delete(message.channel.id);
+    if (guess === game.secret) {
+      this.games.delete(message.channel.id);
 
-    leaderboard[message.author.id] = (leaderboard[message.author.id] || 0) + 1;
+      leaderboard[message.author.id] = (leaderboard[message.author.id] || 0) + 1;
 
-    stats[message.author.id] = stats[message.author.id] || {
-      wins: 0,
-      streak: 0
-    };
+      stats[message.author.id] = stats[message.author.id] || {
+        wins: 0,
+        streak: 0
+      };
 
-    stats[message.author.id].wins++;
-    stats[message.author.id].streak++;
+      stats[message.author.id].wins++;
+      stats[message.author.id].streak++;
 
-    save(leaderboardFile, leaderboard);
-    save(statsFile, stats);
+      save(leaderboardFile, leaderboard);
+      save(statsFile, stats);
 
-    return message.reply(`🏆 Correct! The word was **${game.secret}**`);
+      return message.reply(`🏆 Correct! The word was **${game.secret}**`);
+    }
+
+    const guessEmbedding = await getEmbedding(guess);
+    const similarity = cosineSimilarity(game.embedding, guessEmbedding);
+
+    game.guesses.push({ word: guess, similarity });
+
+    game.guesses.sort((a, b) => b.similarity - a.similarity);
+
+    const rank = game.guesses.findIndex(g => g.word === guess) + 1;
+
+    const bestBefore = game.userBest.get(message.author.id) || 0;
+    const arrow =
+      similarity > bestBefore ? "⬆️" :
+      similarity < bestBefore ? "⬇️" :
+      "➡️";
+
+    if (similarity > bestBefore)
+      game.userBest.set(message.author.id, similarity);
+
+    const top5 = game.guesses.slice(0, 5)
+      .map((g, i) => `${i + 1}. ${g.word}`)
+      .join("\n");
+
+    return message.reply({
+      embeds: [
+        new EmbedBuilder()
+          .setTitle(`🔎 ${guess}`)
+          .setDescription(
+            `Rank: **#${rank}** ${arrow}\n\n` +
+            `**Top Guesses:**\n${top5}`
+          )
+          .setColor(0x00AEFF)
+      ]
+    });
   }
-
-  const guessEmbedding = await getEmbedding(guess);
-  const similarity = cosineSimilarity(game.embedding, guessEmbedding);
-
-  game.guesses.push({ word: guess, similarity });
-
-  // Sort best first
-  game.guesses.sort((a, b) => b.similarity - a.similarity);
-
-  const rank = game.guesses.findIndex(g => g.word === guess) + 1;
-
-  const bestBefore = game.userBest.get(message.author.id) || 0;
-  const arrow =
-    similarity > bestBefore ? "⬆️" :
-    similarity < bestBefore ? "⬇️" :
-    "➡️";
-
-  if (similarity > bestBefore)
-    game.userBest.set(message.author.id, similarity);
-
-  const top5 = game.guesses.slice(0, 5)
-    .map((g, i) => `${i + 1}. ${g.word}`)
-    .join("\n");
-
-  message.reply({
-    embeds: [
-      new EmbedBuilder()
-        .setTitle(`🔎 ${guess}`)
-        .setDescription(
-          `Rank: **#${rank}** ${arrow}\n\n` +
-          `**Top Guesses:**\n${top5}`
-        )
-        .setColor(0x00AEFF)
-    ]
-  });
 }
 
 const manager = new GameManager();
